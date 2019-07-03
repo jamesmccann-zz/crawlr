@@ -220,6 +220,7 @@ func (c *Crawl) fetch(ctx context.Context, uri string, depth int) error {
 		return err
 	}
 
+	// TODO: tracking for skipped fetches
 	if res.StatusCode != http.StatusOK {
 		return nil
 	}
@@ -245,6 +246,7 @@ func (c *Crawl) fetch(ctx context.Context, uri string, depth int) error {
 		page.LastModified, _ = time.Parse(http.TimeFormat, lm)
 	}
 
+	// TODO: extract link parsing and normalization into separate entity/functions
 	seen := make(map[string]struct{})
 	doc.Find("a[href]").Each(func(_ int, s *goquery.Selection) {
 		href, ok := s.Attr("href")
