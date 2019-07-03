@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	log "github.com/sirupsen/logrus"
 )
 
 // Default options for Crawler if not overidden.
@@ -122,8 +123,9 @@ func (c *Crawl) Go(ctx context.Context) error {
 
 	readyCh := make(chan chan visit, c.Opts.NumWorkers)
 
+	log.Debugf("Crawl: starting %d fetch workers", c.Opts.NumWorkers)
 	for i := 0; i < c.Opts.NumWorkers; i++ {
-		go func() {
+		go func(i int) {
 			work := make(chan visit)
 
 			for {
@@ -146,6 +148,8 @@ func (c *Crawl) Go(ctx context.Context) error {
 					}
 				}
 
+				log.Debugf("Worker %d: starting fetch for %s", i, visit.url)
+
 				// run a fetch
 				fetchCtx, cancel := context.WithTimeout(ctx, c.Opts.FetchTimeout)
 				c.fetch(fetchCtx, visit.url, visit.depth)
@@ -153,7 +157,7 @@ func (c *Crawl) Go(ctx context.Context) error {
 
 				c.wg.Done()
 			}
-		}()
+		}(i)
 	}
 
 	// run a central dispatch loop
@@ -205,6 +209,7 @@ func (c *Crawl) visit(url string, depth int) {
 func (c *Crawl) fetch(ctx context.Context, uri string, depth int) error {
 	req, err := http.NewRequest(http.MethodGet, uri, nil)
 	if err != nil {
+		log.Debugf("Skipping %s, error constructing http request: %s", uri, err)
 		return err
 	}
 
@@ -212,25 +217,30 @@ func (c *Crawl) fetch(ctx context.Context, uri string, depth int) error {
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
+		log.Debugf("Skipping %s, error making http request: %s", uri, err)
 		return err
 	}
 
 	doc, err := goquery.NewDocumentFromReader(res.Body)
 	if err != nil {
+		log.Debugf("Skipping %s, could not read body: %s", uri, err)
 		return err
 	}
 
 	// TODO: tracking for skipped fetches
 	if res.StatusCode != http.StatusOK {
+		log.Debugf("Skipping %s, bad status code: %d", uri, res.StatusCode)
 		return nil
 	}
 
 	if ok, _ := regexp.MatchString(`text\/html`, res.Header.Get("Content-Type")); !ok {
+		log.Debugf("Skipping %s, not an HTML document", uri)
 		return nil
 	}
 
 	pageURL, _ := url.Parse(uri)
 	if err != nil {
+		log.Debugf("Skipping %s, invalid URL", uri)
 		return err
 	}
 

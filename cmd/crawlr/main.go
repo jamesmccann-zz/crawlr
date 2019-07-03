@@ -11,6 +11,7 @@ import (
 
 	"github.com/jamesmccann/crawlr"
 	"github.com/jamesmccann/crawlr/sitemap"
+	log "github.com/sirupsen/logrus"
 )
 
 var (
@@ -18,6 +19,7 @@ var (
 	format     = flag.String("f", "xml", "Output sitemap format (xml|simple).")
 	concurrent = flag.Int("c", 1, "Number of concurrent workers for crawling.")
 	exclude    = flag.String("exclude", "", "Comma-separated list of regexp for urls to exclude from crawling.")
+	verbose    = flag.Bool("v", false, "Enables verbose debug logging.")
 	help       = flag.Bool("h", false, "Prints this help message.")
 )
 
@@ -26,6 +28,8 @@ func init() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Usage: crawlr [options] <url>\n")
 		flag.PrintDefaults()
 	}
+
+	log.SetOutput(os.Stdout)
 }
 
 func main() {
@@ -38,6 +42,10 @@ func main() {
 	if *help {
 		flag.Usage()
 		os.Exit(0)
+	}
+
+	if *verbose {
+		log.SetLevel(log.DebugLevel)
 	}
 
 	if _, ok := sitemap.Formatters[*format]; !ok {
