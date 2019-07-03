@@ -18,7 +18,8 @@ type Formatter interface {
 }
 
 type xmlUrl struct {
-	Loc string `xml:"loc"`
+	Loc     string `xml:"loc"`
+	LastMod string `xml:"lastmod,omitempty"`
 }
 
 type urlset struct {
@@ -34,9 +35,12 @@ func (_ XmlFormatter) Format(crawl crawlr.Crawl) ([]byte, error) {
 	}
 
 	for _, page := range crawl.Pages {
-		sitemap.Urls = append(sitemap.Urls, xmlUrl{
-			Loc: page.URL,
-		})
+		url := xmlUrl{Loc: page.URL}
+		if !page.LastModified.IsZero() {
+			url.LastMod = page.LastModified.Format("2006-01-02")
+		}
+
+		sitemap.Urls = append(sitemap.Urls, url)
 	}
 
 	output, err := xml.MarshalIndent(sitemap, "  ", "  ")
@@ -57,6 +61,7 @@ func (_ SimpleFormatter) Format(crawl crawlr.Crawl) ([]byte, error) {
 	seen := make(map[string]struct{})
 	for _, page := range crawl.Pages[1:] {
 		buf.WriteString(fmt.Sprintf("%s- %s\n", "  ", page.URL))
+		buf.WriteString(fmt.Sprintf("%s  Last modified: %s\n", "  ", page.LastModified))
 		seen[page.URL] = struct{}{}
 
 		for _, link := range page.Links {

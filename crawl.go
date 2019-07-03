@@ -33,11 +33,12 @@ var DefaultOpts = Opts{
 
 // Page represents a crawl result including url, title, and timestamp for the fetch.
 type Page struct {
-	URL       string
-	Title     string
-	FetchedAt time.Time
-	Depth     int
-	Links     []string
+	URL          string
+	Title        string
+	FetchedAt    time.Time
+	LastModified time.Time
+	Depth        int
+	Links        []string
 }
 
 // Opts allow configuration of a Crawl.
@@ -237,6 +238,11 @@ func (c *Crawl) fetch(ctx context.Context, uri string, depth int) error {
 		Title:     doc.Find("title").Text(),
 		FetchedAt: time.Now(),
 		Depth:     depth,
+	}
+
+	lm := res.Header.Get("Last-Modified")
+	if lm != "" {
+		page.LastModified, _ = time.Parse(http.TimeFormat, lm)
 	}
 
 	seen := make(map[string]struct{})
