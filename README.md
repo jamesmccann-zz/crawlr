@@ -23,6 +23,7 @@ Usage: crawlr [options] <url>
   -f string
     	Output sitemap format (xml|simple). (default "xml")
   -h	Prints this help message.
+  -v	Enables verbose debug logging.
 ```
 
 ### Example
