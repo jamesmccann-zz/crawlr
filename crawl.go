@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -34,12 +35,12 @@ var DefaultOpts = Opts{
 
 // Page represents a crawl result including url, title, and timestamp for the fetch.
 type Page struct {
-	URL          string
+	URL          url.URL
 	Title        string
 	FetchedAt    time.Time
 	LastModified time.Time
 	Depth        int
-	Links        []string
+	Links        []url.URL
 }
 
 // Opts allow configuration of a Crawl.
@@ -115,7 +116,10 @@ func NewCrawl(u string, opts Opts) (*Crawl, error) {
 // Go starts the crawl from the provided start url.
 func (c *Crawl) Go(ctx context.Context) error {
 	c.wg = sync.WaitGroup{}
-	c.next = make(chan visit, 1000)
+
+	// buffer size is arbitrary but improves perf
+	// by keeping ingest queue unrestricted
+	c.next = make(chan visit, 100)
 
 	// run workers to fetch queued urls
 	workCtx, workCancel := context.WithCancel(ctx)
@@ -148,13 +152,13 @@ func (c *Crawl) Go(ctx context.Context) error {
 					}
 				}
 
-				log.Debugf("Worker %d: starting fetch for %s", i, visit.url)
-
 				// run a fetch
+				log.Debugf("Worker %d: starting fetch for %s", i, visit.url)
 				fetchCtx, cancel := context.WithTimeout(ctx, c.Opts.FetchTimeout)
 				c.fetch(fetchCtx, visit.url, visit.depth)
 				cancel()
 
+				// mark it as completed
 				c.wg.Done()
 			}
 		}(i)
@@ -170,11 +174,15 @@ func (c *Crawl) Go(ctx context.Context) error {
 			}
 			c.visited[v.url] = struct{}{}
 
-			// wait for a ready worker
-			workCh := <-readyCh
+			// we never want to block the url queue from being added to
+			// so we use a short-lived goroutine here to handle the wait
+			go func(v visit) {
+				// wait for a ready worker
+				workCh := <-readyCh
 
-			// hand off the job
-			workCh <- v
+				// hand off the job
+				workCh <- v
+			}(v)
 		}
 	}()
 
@@ -194,11 +202,10 @@ func (c *Crawl) Go(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-waitCh:
+			close(c.next)
 			return nil
 		}
 	}
-
-	return nil
 }
 
 func (c *Crawl) visit(url string, depth int) {
@@ -221,13 +228,6 @@ func (c *Crawl) fetch(ctx context.Context, uri string, depth int) error {
 		return err
 	}
 
-	doc, err := goquery.NewDocumentFromReader(res.Body)
-	if err != nil {
-		log.Debugf("Skipping %s, could not read body: %s", uri, err)
-		return err
-	}
-
-	// TODO: tracking for skipped fetches
 	if res.StatusCode != http.StatusOK {
 		log.Debugf("Skipping %s, bad status code: %d", uri, res.StatusCode)
 		return nil
@@ -238,17 +238,52 @@ func (c *Crawl) fetch(ctx context.Context, uri string, depth int) error {
 		return nil
 	}
 
-	pageURL, _ := url.Parse(uri)
+	page, err := NewPageFromResponse(res)
 	if err != nil {
-		log.Debugf("Skipping %s, invalid URL", uri)
-		return err
+		log.Debugf("Skipping %s, could not parse page: %s", uri, err)
+	}
+	page.Depth = depth
+
+	c.pl.Lock()
+	c.Pages = append(c.Pages, page)
+	c.pl.Unlock()
+
+	if depth == c.Opts.Depth {
+		return nil
+	}
+
+link:
+	for _, link := range page.Links {
+		// dont queue any urls in the exclusion list
+		l := link.String()
+		for _, exclusion := range c.Opts.Exclude {
+			if ok, _ := regexp.MatchString(exclusion, l); ok {
+				continue link
+			}
+		}
+
+		if !c.Opts.FollowExt && link.Host != page.URL.Host {
+			continue
+		}
+
+		c.visit(link.String(), depth+1)
+	}
+
+	return nil
+}
+
+// NewPageFromResponse is a helper func to construct a Page
+// struct from an http.Response.
+func NewPageFromResponse(res *http.Response) (Page, error) {
+	doc, err := goquery.NewDocumentFromReader(res.Body)
+	if err != nil {
+		return Page{}, err
 	}
 
 	page := Page{
-		URL:       uri,
+		URL:       *res.Request.URL,
 		Title:     doc.Find("title").Text(),
 		FetchedAt: time.Now(),
-		Depth:     depth,
 	}
 
 	lm := res.Header.Get("Last-Modified")
@@ -256,7 +291,7 @@ func (c *Crawl) fetch(ctx context.Context, uri string, depth int) error {
 		page.LastModified, _ = time.Parse(http.TimeFormat, lm)
 	}
 
-	// TODO: extract link parsing and normalization into separate entity/functions
+	// extract links from document body
 	seen := make(map[string]struct{})
 	doc.Find("a[href]").Each(func(_ int, s *goquery.Selection) {
 		href, ok := s.Attr("href")
@@ -264,15 +299,15 @@ func (c *Crawl) fetch(ctx context.Context, uri string, depth int) error {
 			return
 		}
 
-		// skip over any urls in the exclusion list
-		for _, exclusion := range c.Opts.Exclude {
-			if ok, _ := regexp.MatchString(exclusion, href); ok {
-				return
-			}
-		}
-
 		hrefURL, err := url.Parse(href)
 		if err != nil {
+			return
+		}
+
+		// if the url has an extension and that extension
+		// is not html then skip
+		ext := filepath.Ext(hrefURL.Path)
+		if ext != "" && ext != ".html" {
 			return
 		}
 
@@ -282,10 +317,7 @@ func (c *Crawl) fetch(ctx context.Context, uri string, depth int) error {
 
 		// normalize: resolve the url relative to the base url to handle href="/page"
 		// if the url href url is already absolute, this will be a no-op
-		absURL := pageURL.ResolveReference(hrefURL)
-		if !c.Opts.FollowExt && absURL.Host != pageURL.Host {
-			return
-		}
+		absURL := page.URL.ResolveReference(hrefURL)
 
 		// normalize: remove trailing slash
 		absURL.Path = strings.TrimRight(absURL.Path, "/")
@@ -296,22 +328,10 @@ func (c *Crawl) fetch(ctx context.Context, uri string, depth int) error {
 		}
 		seen[absURL.String()] = struct{}{}
 
-		page.Links = append(page.Links, absURL.String())
+		page.Links = append(page.Links, *absURL)
 	})
 
-	c.pl.Lock()
-	c.Pages = append(c.Pages, page)
-	c.pl.Unlock()
-
-	if depth == c.Opts.Depth {
-		return nil
-	}
-
-	for _, link := range page.Links {
-		c.visit(link, depth+1)
-	}
-
-	return nil
+	return page, nil
 }
 
 type visit struct {

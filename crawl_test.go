@@ -29,7 +29,7 @@ func TestCrawl_Go(t *testing.T) {
 
 		require.Equal(t, 1, len(crawl.Pages))
 		require.Equal(t, "Test page", crawl.Pages[0].Title)
-		require.Equal(t, ts.URL, crawl.Pages[0].URL)
+		require.Equal(t, ts.URL, crawl.Pages[0].URL.String())
 		require.Equal(t, 0, crawl.Pages[0].Depth)
 		require.WithinDuration(t, time.Now(), crawl.Pages[0].FetchedAt, time.Millisecond)
 	})
@@ -130,7 +130,7 @@ func TestCrawl_Go(t *testing.T) {
 		require.False(t, containsUrl(crawl, ts2.URL))
 	})
 
-	t.Run("test does follow external urls via flag in opts", func(t *testing.T) {
+	t.Run("test does fetch external urls via flag in opts", func(t *testing.T) {
 		ts2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			resp, err := ioutil.ReadFile("./testdata/1_no_links.html")
 			require.NoError(t, err)
@@ -186,7 +186,7 @@ func TestCrawl_Go(t *testing.T) {
 
 func containsUrl(crawl *Crawl, url string) bool {
 	for _, page := range crawl.Pages {
-		if page.URL == url {
+		if page.URL.String() == url {
 			return true
 		}
 	}
