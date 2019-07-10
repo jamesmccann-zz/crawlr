@@ -35,7 +35,7 @@ func (_ XmlFormatter) Format(crawl crawlr.Crawl) ([]byte, error) {
 	}
 
 	for _, page := range crawl.Pages {
-		url := xmlUrl{Loc: page.URL}
+		url := xmlUrl{Loc: page.URL.String()}
 		if !page.LastModified.IsZero() {
 			url.LastMod = page.LastModified.Format("2006-01-02")
 		}
@@ -56,21 +56,21 @@ type SimpleFormatter struct{}
 func (_ SimpleFormatter) Format(crawl crawlr.Crawl) ([]byte, error) {
 	// start with base url
 	var buf bytes.Buffer
-	buf.WriteString("Crawl results for " + crawl.Pages[0].URL + "\n")
+	buf.WriteString("Crawl results for " + crawl.Pages[0].URL.String() + "\n")
 
 	seen := make(map[string]struct{})
 	for _, page := range crawl.Pages[1:] {
-		buf.WriteString(fmt.Sprintf("%s- %s\n", "  ", page.URL))
+		buf.WriteString(fmt.Sprintf("%s- %s\n", "  ", page.URL.String()))
 		buf.WriteString(fmt.Sprintf("%s  Last modified: %s\n", "  ", page.LastModified))
-		seen[page.URL] = struct{}{}
+		seen[page.URL.String()] = struct{}{}
 
 		for _, link := range page.Links {
-			if _, ok := seen[link]; ok {
+			if _, ok := seen[link.String()]; ok {
 				continue
 			}
-			seen[link] = struct{}{}
+			seen[link.String()] = struct{}{}
 
-			buf.WriteString(fmt.Sprintf("%s- %s\n", "    ", link))
+			buf.WriteString(fmt.Sprintf("%s- %s\n", "    ", link.String()))
 		}
 	}
 
