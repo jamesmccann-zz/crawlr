@@ -10,7 +10,7 @@ go get github.com/jamesmccann/crawlr
 
 ## Usage
 
-Usage from command line: 
+Usage from command line:
 
 ```
 Usage: crawlr [options] <url>

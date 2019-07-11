@@ -39,8 +39,16 @@ type Page struct {
 	Title        string
 	FetchedAt    time.Time
 	LastModified time.Time
-	Depth        int
 	Links        []url.URL
+}
+
+// FetchResult is a reference to the result of a fetched remote page.
+type FetchResult struct {
+	URL     url.URL
+	Success bool
+	Depth   int
+	Page    Page
+	Error   error
 }
 
 // Opts allow configuration of a Crawl.
@@ -87,27 +95,32 @@ func (o Opts) Merge(other Opts) Opts {
 
 // Crawl creates a web-crawler starting from a provided url.
 type Crawl struct {
-	BaseURL string
+	BaseURL url.URL
 	Opts
 
-	pl    sync.Mutex
-	Pages []Page
+	pl      sync.Mutex
+	Pages   []Page
+	Results []FetchResult
 
+	wg      sync.WaitGroup
 	visited map[string]struct{}
 	next    chan visit
-	wg      sync.WaitGroup
+	fetched chan FetchResult
 }
 
 // NewCrawl is a constructor for Crawl.
 func NewCrawl(u string, opts Opts) (*Crawl, error) {
-	if _, err := url.ParseRequestURI(u); err != nil {
+	baseURL, err := url.ParseRequestURI(u)
+	if err != nil {
 		return nil, fmt.Errorf("%s is not a valid url", u)
 	}
+
+	strings.TrimRight(baseURL.Path, "/")
 
 	opts = DefaultOpts.Merge(opts)
 
 	return &Crawl{
-		BaseURL: u,
+		BaseURL: *baseURL,
 		Opts:    opts,
 		visited: make(map[string]struct{}),
 	}, nil
@@ -120,6 +133,7 @@ func (c *Crawl) Go(ctx context.Context) error {
 	// buffer size is arbitrary but improves perf
 	// by keeping ingest queue unrestricted
 	c.next = make(chan visit, 100)
+	c.fetched = make(chan FetchResult)
 
 	// run workers to fetch queued urls
 	workCtx, workCancel := context.WithCancel(ctx)
@@ -153,40 +167,80 @@ func (c *Crawl) Go(ctx context.Context) error {
 				}
 
 				// run a fetch
-				log.Debugf("Worker %d: starting fetch for %s", i, visit.url)
+				log.Debugf("Worker %d: starting fetch for %s", i, visit.url.String())
+
 				fetchCtx, cancel := context.WithTimeout(ctx, c.Opts.FetchTimeout)
 				c.fetch(fetchCtx, visit.url, visit.depth)
 				cancel()
-
-				// mark it as completed
-				c.wg.Done()
 			}
 		}(i)
 	}
 
-	// run a central dispatch loop
+	// run a central dispatch-collect loop
 	go func() {
-		for v := range c.next {
-			// skip if we've already visited this page
-			if _, ok := c.visited[v.url]; ok {
+		for {
+			select {
+			case res := <-c.fetched:
+				c.Results = append(c.Results, res)
+				if !res.Success {
+					c.wg.Done()
+					continue
+				}
+
+				c.Pages = append(c.Pages, res.Page)
+
+				// don't queue any child links if we've hit depth
+				if res.Depth == c.Opts.Depth {
+					c.wg.Done()
+					continue
+				}
+
+			link:
+				for _, link := range res.Page.Links {
+					// dont queue any urls in the exclusion list
+					l := link.String()
+					for _, exclusion := range c.Opts.Exclude {
+						if ok, _ := regexp.MatchString(exclusion, l); ok {
+							continue link
+						}
+					}
+
+					// don't queue if we don't want to crawl external urls
+					if !c.Opts.FollowExt && link.Host != res.Page.URL.Host {
+						continue link
+					}
+
+					// don't queue if we've visited this url
+					// we only care about host and path for visits
+					if _, ok := c.visited[link.Host+link.Path]; ok {
+						continue link
+					}
+
+					c.wg.Add(1)
+					c.visit(link, res.Depth+1)
+				}
+
 				c.wg.Done()
-				continue
+			case v := <-c.next:
+				// we only care about host and path for visits
+				// e.g. we don't want to visit duplicates with/without https
+				c.visited[v.url.Host+v.url.Path] = struct{}{}
+
+				// we never want to block the url queue from being added to
+				// so we use a short-lived goroutine here to handle the wait
+				go func(v visit) {
+					// wait for a ready worker
+					workCh := <-readyCh
+
+					// hand off the job
+					workCh <- v
+				}(v)
 			}
-			c.visited[v.url] = struct{}{}
-
-			// we never want to block the url queue from being added to
-			// so we use a short-lived goroutine here to handle the wait
-			go func(v visit) {
-				// wait for a ready worker
-				workCh := <-readyCh
-
-				// hand off the job
-				workCh <- v
-			}(v)
 		}
 	}()
 
 	// trigger initial visit
+	c.wg.Add(1)
 	c.visit(c.BaseURL, 0)
 
 	// wait for all work to complete
@@ -208,15 +262,13 @@ func (c *Crawl) Go(ctx context.Context) error {
 	}
 }
 
-func (c *Crawl) visit(url string, depth int) {
-	c.wg.Add(1)
+func (c *Crawl) visit(url url.URL, depth int) {
 	c.next <- visit{url, depth}
 }
 
-func (c *Crawl) fetch(ctx context.Context, uri string, depth int) error {
-	req, err := http.NewRequest(http.MethodGet, uri, nil)
+func (c *Crawl) fetch(ctx context.Context, uri url.URL, depth int) error {
+	req, err := http.NewRequest(http.MethodGet, uri.String(), nil)
 	if err != nil {
-		log.Debugf("Skipping %s, error constructing http request: %s", uri, err)
 		return err
 	}
 
@@ -224,49 +276,27 @@ func (c *Crawl) fetch(ctx context.Context, uri string, depth int) error {
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		log.Debugf("Skipping %s, error making http request: %s", uri, err)
 		return err
 	}
 
 	if res.StatusCode != http.StatusOK {
-		log.Debugf("Skipping %s, bad status code: %d", uri, res.StatusCode)
 		return nil
 	}
 
 	if ok, _ := regexp.MatchString(`text\/html`, res.Header.Get("Content-Type")); !ok {
-		log.Debugf("Skipping %s, not an HTML document", uri)
 		return nil
 	}
 
 	page, err := NewPageFromResponse(res)
 	if err != nil {
-		log.Debugf("Skipping %s, could not parse page: %s", uri, err)
-	}
-	page.Depth = depth
-
-	c.pl.Lock()
-	c.Pages = append(c.Pages, page)
-	c.pl.Unlock()
-
-	if depth == c.Opts.Depth {
 		return nil
 	}
 
-link:
-	for _, link := range page.Links {
-		// dont queue any urls in the exclusion list
-		l := link.String()
-		for _, exclusion := range c.Opts.Exclude {
-			if ok, _ := regexp.MatchString(exclusion, l); ok {
-				continue link
-			}
-		}
-
-		if !c.Opts.FollowExt && link.Host != page.URL.Host {
-			continue
-		}
-
-		c.visit(link.String(), depth+1)
+	c.fetched <- FetchResult{
+		URL:     uri,
+		Page:    page,
+		Success: true,
+		Depth:   depth,
 	}
 
 	return nil
@@ -335,6 +365,6 @@ func NewPageFromResponse(res *http.Response) (Page, error) {
 }
 
 type visit struct {
-	url   string
+	url   url.URL
 	depth int
 }

@@ -30,7 +30,7 @@ func TestCrawl_Go(t *testing.T) {
 		require.Equal(t, 1, len(crawl.Pages))
 		require.Equal(t, "Test page", crawl.Pages[0].Title)
 		require.Equal(t, ts.URL, crawl.Pages[0].URL.String())
-		require.Equal(t, 0, crawl.Pages[0].Depth)
+		require.Equal(t, 0, crawl.Results[0].Depth)
 		require.WithinDuration(t, time.Now(), crawl.Pages[0].FetchedAt, time.Millisecond)
 	})
 
@@ -54,7 +54,7 @@ func TestCrawl_Go(t *testing.T) {
 		require.True(t, containsUrl(crawl, ts.URL+"/food"))
 		require.True(t, containsUrl(crawl, ts.URL+"/blog"))
 		require.True(t, containsUrl(crawl, ts.URL+"/contact"))
-		require.Equal(t, 1, crawl.Pages[len(crawl.Pages)-1].Depth)
+		require.Equal(t, 1, crawl.Results[len(crawl.Results)-1].Depth)
 	})
 
 	t.Run("test does not re-crawl visited pages", func(t *testing.T) {
