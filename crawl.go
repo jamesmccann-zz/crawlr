@@ -2,6 +2,7 @@ package crawlr
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -13,6 +14,14 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	log "github.com/sirupsen/logrus"
+)
+
+var (
+	ErrFailedTimeout            = errors.New("request timeout during fetch")
+	ErrFailedInvalidStatus      = errors.New("invalid status code")
+	ErrFailedInvalidContentType = errors.New("content type is not html")
+	ErrSkippedExclusion         = errors.New("skipped as url in exclusion list")
+	ErrSkippedExternal          = errors.New("skipped as url is external")
 )
 
 // Default options for Crawler if not overidden.
@@ -44,11 +53,16 @@ type Page struct {
 
 // FetchResult is a reference to the result of a fetched remote page.
 type FetchResult struct {
-	URL     url.URL
-	Success bool
-	Depth   int
-	Page    Page
-	Error   error
+	URL        url.URL
+	Depth      int
+	Page       Page
+	Error      error
+	StatusCode int
+}
+
+// IsSkipped returns true if the fetch result had an error due to a skip rule
+func (f FetchResult) IsSkipped() bool {
+	return f.Error == ErrSkippedExclusion || f.Error == ErrSkippedExternal
 }
 
 // Opts allow configuration of a Crawl.
@@ -167,8 +181,6 @@ func (c *Crawl) Go(ctx context.Context) error {
 				}
 
 				// run a fetch
-				log.Debugf("Worker %d: starting fetch for %s", i, visit.url.String())
-
 				fetchCtx, cancel := context.WithTimeout(ctx, c.Opts.FetchTimeout)
 				c.fetch(fetchCtx, visit.url, visit.depth)
 				cancel()
@@ -182,7 +194,7 @@ func (c *Crawl) Go(ctx context.Context) error {
 			select {
 			case res := <-c.fetched:
 				c.Results = append(c.Results, res)
-				if !res.Success {
+				if res.Error != nil {
 					c.wg.Done()
 					continue
 				}
@@ -201,12 +213,14 @@ func (c *Crawl) Go(ctx context.Context) error {
 					l := link.String()
 					for _, exclusion := range c.Opts.Exclude {
 						if ok, _ := regexp.MatchString(exclusion, l); ok {
+							c.Results = append(c.Results, FetchResult{URL: link, Depth: res.Depth + 1, Error: ErrSkippedExclusion})
 							continue link
 						}
 					}
 
 					// don't queue if we don't want to crawl external urls
 					if !c.Opts.FollowExt && link.Host != res.Page.URL.Host {
+						c.Results = append(c.Results, FetchResult{URL: link, Depth: res.Depth + 1, Error: ErrSkippedExternal})
 						continue link
 					}
 
@@ -266,8 +280,8 @@ func (c *Crawl) visit(url url.URL, depth int) {
 	c.next <- visit{url, depth}
 }
 
-func (c *Crawl) fetch(ctx context.Context, uri url.URL, depth int) error {
-	req, err := http.NewRequest(http.MethodGet, uri.String(), nil)
+func (c *Crawl) fetch(ctx context.Context, url url.URL, depth int) error {
+	req, err := http.NewRequest(http.MethodGet, url.String(), nil)
 	if err != nil {
 		return err
 	}
@@ -275,29 +289,31 @@ func (c *Crawl) fetch(ctx context.Context, uri url.URL, depth int) error {
 	req = req.WithContext(ctx)
 
 	res, err := http.DefaultClient.Do(req)
-	if err != nil {
+	switch {
+	case err == context.DeadlineExceeded:
+		c.fetched <- FetchResult{URL: url, Depth: depth, Error: ErrFailedTimeout}
+		return nil
+	case err != nil:
 		return err
 	}
 
 	if res.StatusCode != http.StatusOK {
+		c.fetched <- FetchResult{URL: url, Depth: depth, Error: ErrFailedInvalidStatus, StatusCode: res.StatusCode}
 		return nil
 	}
 
 	if ok, _ := regexp.MatchString(`text\/html`, res.Header.Get("Content-Type")); !ok {
+		c.fetched <- FetchResult{URL: url, Depth: depth, Error: ErrFailedInvalidContentType}
 		return nil
 	}
 
 	page, err := NewPageFromResponse(res)
 	if err != nil {
+		c.fetched <- FetchResult{URL: url, Depth: depth, Error: fmt.Errorf("error fetching %s: %s", url.String(), err)}
 		return nil
 	}
 
-	c.fetched <- FetchResult{
-		URL:     uri,
-		Page:    page,
-		Success: true,
-		Depth:   depth,
-	}
+	c.fetched <- FetchResult{URL: url, Page: page, Depth: depth}
 
 	return nil
 }
