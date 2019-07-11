@@ -81,12 +81,17 @@ func main() {
 
 	err = crawl.Go(runCtx)
 	switch {
-	case err == runCtx.Err():
+	case runCtx.Err() != nil:
 		// user cancelled
+		os.Exit(0)
 	case err != nil:
 		fmt.Printf("Error: %s\n", err)
 		os.Exit(1)
 	}
+
+	fmt.Printf("Crawl results for %s:\n", crawl.Pages[0].URL.String())
+	fmt.Printf("%d links crawled, %d pages fetched, %d skipped, %d failed\n",
+		crawl.NumCrawled(), crawl.NumFetched(), crawl.NumSkipped(), crawl.NumFailed())
 
 	formatter := sitemap.Formatters[*format]
 	sitemap, err := formatter.Format(*crawl)

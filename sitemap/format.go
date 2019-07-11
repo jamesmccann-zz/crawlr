@@ -54,10 +54,7 @@ func (_ XmlFormatter) Format(crawl crawlr.Crawl) ([]byte, error) {
 type SimpleFormatter struct{}
 
 func (_ SimpleFormatter) Format(crawl crawlr.Crawl) ([]byte, error) {
-	// start with base url
 	var buf bytes.Buffer
-	buf.WriteString("Crawl results for " + crawl.Pages[0].URL.String() + "\n")
-
 	seen := make(map[string]struct{})
 	for _, page := range crawl.Pages[1:] {
 		buf.WriteString(fmt.Sprintf("%s- %s\n", "  ", page.URL.String()))

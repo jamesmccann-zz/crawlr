@@ -65,6 +65,10 @@ func (f FetchResult) IsSkipped() bool {
 	return f.Error == ErrSkippedExclusion || f.Error == ErrSkippedExternal
 }
 
+func (f FetchResult) IsFailure() bool {
+	return f.Error != nil && !f.IsSkipped()
+}
+
 // Opts allow configuration of a Crawl.
 type Opts struct {
 	// Depth of search through linked pages.
@@ -177,8 +181,11 @@ func (c *Crawl) Go(ctx context.Context) error {
 						return
 					case visit = <-work:
 						break wait
+					default:
 					}
 				}
+
+				log.Debugf("Crawl: worker %d fetching %s\n", i, visit.url.String())
 
 				// run a fetch
 				fetchCtx, cancel := context.WithTimeout(ctx, c.Opts.FetchTimeout)
@@ -378,6 +385,42 @@ func NewPageFromResponse(res *http.Response) (Page, error) {
 	})
 
 	return page, nil
+}
+
+// NumCrawled returns the number of pages that were "crawled" during execution.
+// The number of crawled pages is not necessarily the number of pages
+// that were fetched, for example skipped and failed pages are counted as "crawls".
+func (c *Crawl) NumCrawled() int {
+	return len(c.Results)
+}
+
+// NumFetched returns the number of pages that were successfully fetched during execution.
+func (c *Crawl) NumFetched() int {
+	return len(c.Pages)
+}
+
+// NumSkipped returns the number of pages that were skipped during execution.
+func (c *Crawl) NumSkipped() int {
+	var count int
+	for _, res := range c.Results {
+		if res.IsSkipped() {
+			count = count + 1
+		}
+	}
+
+	return count
+}
+
+// NumFailed returns the number of pages where the crawl failed during execution.
+func (c *Crawl) NumFailed() int {
+	var count int
+	for _, res := range c.Results {
+		if res.IsFailure() {
+			count = count + 1
+		}
+	}
+
+	return count
 }
 
 type visit struct {
