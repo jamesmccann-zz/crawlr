@@ -9,9 +9,10 @@ import (
 	"strings"
 	"syscall"
 
+	log "github.com/sirupsen/logrus"
+
 	"github.com/jamesmccann/crawlr"
 	"github.com/jamesmccann/crawlr/sitemap"
-	log "github.com/sirupsen/logrus"
 )
 
 var (

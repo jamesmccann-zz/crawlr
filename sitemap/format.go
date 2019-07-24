@@ -56,6 +56,8 @@ type SimpleFormatter struct{}
 func (_ SimpleFormatter) Format(crawl crawlr.Crawl) ([]byte, error) {
 	var buf bytes.Buffer
 	seen := make(map[string]struct{})
+
+	buf.WriteString(fmt.Sprintf("%s\n", crawl.BaseURL.String()))
 	for _, page := range crawl.Pages[1:] {
 		buf.WriteString(fmt.Sprintf("%s- %s\n", "  ", page.URL.String()))
 		buf.WriteString(fmt.Sprintf("%s  Last modified: %s\n", "  ", page.LastModified))

@@ -1,0 +1,5 @@
+- add timing/perf tracking for requests
+- allow output to file via flag
+- add httpserver and trigger crawl via web req
+- add redis for caching crawl results
+- add queueing of crawl requests in redis
